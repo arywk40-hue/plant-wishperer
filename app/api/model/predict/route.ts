@@ -20,7 +20,9 @@ export async function POST(req: Request) {
       }
     }
 
-    const result = await predictFromFiles(files)
+  // read optional category
+  const category = formData.get("category") as string | null
+  const result = await predictFromFiles(files, category || undefined)
     return NextResponse.json({ ok: true, result })
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 })

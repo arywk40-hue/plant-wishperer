@@ -1,16 +1,22 @@
 "use client"
 
 import { useState } from "react"
+import dynamic from 'next/dynamic'
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
 import { ArrowLeft, ImageIcon, Zap, Wind, Mic } from "lucide-react"
 import UploadPanel from "@/components/dashboard/upload-panel"
 import DashboardHeader from "@/components/dashboard/dashboard-header"
-import AnalysisResults from "@/components/dashboard/analysis-results"
-import RealTimeSensorMonitor from "@/components/dashboard/real-time-sensor-monitor"
+const AnalysisResults = dynamic(() => import('@/components/dashboard/analysis-results'), { ssr: false })
+const RealTimeSensorMonitor = dynamic(() => import('@/components/dashboard/real-time-sensor-monitor'), { ssr: false })
+const QuickSensorEntry = dynamic(() => import('@/components/dashboard/quick-sensor-entry'), { ssr: false })
+const WeatherFetcher = dynamic(() => import('@/components/dashboard/weather-fetcher'), { ssr: false })
+import Tooltip from "@/components/ui/tooltip"
+import { Info } from "lucide-react"
 import AlertSystem from "@/components/dashboard/alert-system"
 import RecommendationsEngine from "@/components/dashboard/recommendations-engine"
+import TrainingStatus from "@/components/dashboard/training-status"
 
 export default function Dashboard() {
   const [uploadedFiles, setUploadedFiles] = useState<Record<string, number>>({
@@ -24,27 +30,187 @@ export default function Dashboard() {
     score: number
     riskData: { vision: number; audio: number; sensor: number }
   } | null>(null)
+  const [modalityResults, setModalityResults] = useState<Record<string, any>>({})
+  const [liveSensorReadings, setLiveSensorReadings] = useState<{
+    moisture: number
+    temperature: number
+    humidity: number
+    ph: number
+  } | null>(null)
+  const [liveSensorDataSeries, setLiveSensorDataSeries] = useState<any[] | null>(null)
+  const [lastPredictInfo, setLastPredictInfo] = useState<{ category: string; time: string; preview: string } | null>(null)
 
   const handleFileUpload = (category: string, count: number) => {
     setUploadedFiles((prev) => ({
       ...prev,
       [category]: prev[category] + count,
     }))
+  }
 
-    if (uploadedFiles.images > 0 || uploadedFiles.audio > 0 || uploadedFiles.sensors > 0 || uploadedFiles.weather > 0) {
-      const visionScore = Math.min(100, 60 + Math.random() * 30)
-      const audioScore = Math.min(100, 55 + Math.random() * 35)
-      const sensorScore = Math.min(100, 65 + Math.random() * 25)
-      const overallScore = Math.round((visionScore + audioScore + sensorScore) / 3)
+  const handlePredictResult = (category: string, data: any) => {
+  // Map backend response to analysisResults shape. Support multiple shapes:
+    //  - { overall, vision, audio, sensor } (model-manager fallback or aggregated result)
+    //  - { results: { filename: { predictions: [...] } } } or array of per-file results
+    //  - single sensor payload {moisture, temperature, humidity, ph} or series
+    const payload = data?.result || data
 
-      setAnalysisResults({
-        score: overallScore,
-        riskData: {
-          vision: Math.round(visionScore),
-          audio: Math.round(audioScore),
-          sensor: Math.round(sensorScore),
-        },
-      })
+    // conservative defaults
+    let vision = 65
+    let audio = 60
+    let sensor = 70
+
+    try {
+      if (payload) {
+        // special-case Open-Meteo-like weather payloads: compute a simple weather score from hourly data
+        if (category === 'weather' && payload.hourly) {
+          try {
+            // Prefer server-provided weatherScore when model/server calculates it
+            if (payload.weatherScore !== undefined) {
+              sensor = Number(payload.weatherScore)
+            } else {
+              const hourly = payload.hourly
+              const temps: number[] = hourly.temperature_2m || []
+              const hums: number[] = hourly.relativehumidity_2m || []
+              const prec: number[] = hourly.precipitation || []
+              const avg = (arr: number[]) => (arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0)
+              const variance = (arr: number[]) => {
+                if (!arr.length) return 0
+                const m = avg(arr)
+                return arr.reduce((s, v) => s + (v - m) * (v - m), 0) / arr.length
+              }
+
+              const avgTemp = avg(temps)
+              const tempVar = Math.sqrt(variance(temps))
+              const avgHum = avg(hums)
+              const humVar = Math.sqrt(variance(hums))
+              const totalPrecip = prec.length ? prec.reduce((a: number, b: number) => a + b, 0) : 0
+              // PM2.5 array may be present as pm2_5 or pm25 depending on API
+              const pmArr: number[] = hourly.pm2_5 || hourly.pm25 || []
+              const avgPM25 = (pmArr.length ? pmArr.reduce((a, b) => a + b, 0) / pmArr.length : undefined)
+
+              // Tuned weighted scoring (more sensitive)
+              // Increase multipliers so deviations and variability reduce score more noticeably.
+              const tempPenalty = Math.min(80, Math.abs(avgTemp - 25) * 3 + tempVar * 1.0)
+              const humPenalty = avgHum < 50 ? (50 - avgHum) * 0.8 + humVar * 0.5 : humVar * 0.5
+              const precipPenalty = Math.min(60, totalPrecip * 0.3)
+
+              let weatherScore = 100 - tempPenalty - humPenalty - precipPenalty
+              // apply AQI-style penalty: mild for 25-50, larger for >50
+              if (avgPM25 !== undefined) {
+                if (avgPM25 > 150) weatherScore -= 30
+                else if (avgPM25 > 100) weatherScore -= 20
+                else if (avgPM25 > 50) weatherScore -= 10
+                else if (avgPM25 > 25) weatherScore -= 5
+              }
+              weatherScore = Math.max(0, Math.min(100, Math.round(weatherScore)))
+              sensor = Math.round(weatherScore)
+
+              // expose pm2_5 back into payload for UI
+              if (avgPM25 !== undefined) payload.avgPM25 = Number(avgPM25.toFixed(2))
+
+              // send to server debug logger for calibration (non-blocking)
+              try {
+                fetch('/api/debug/weather-log', {
+                  method: 'POST',
+                  headers: { 'content-type': 'application/json' },
+                  body: JSON.stringify({ payload, weatherScore: sensor, ts: new Date().toISOString() }),
+                }).catch(() => {})
+              } catch (e) {}
+            }
+          } catch (err) {
+            console.error('Error computing weather score', err)
+          }
+        }
+
+        // 1) direct aggregate shape from model-manager fallback or server
+        if (typeof payload === 'object' && (payload.vision !== undefined || payload.audio !== undefined || payload.sensor !== undefined || payload.overall !== undefined)) {
+          vision = Number(payload.vision ?? vision)
+          audio = Number(payload.audio ?? audio)
+          sensor = Number(payload.sensor ?? sensor)
+
+          // map sensor readings if present directly
+          if (category === 'sensors' && (payload.moisture !== undefined || payload.temperature !== undefined || payload.humidity !== undefined || payload.ph !== undefined)) {
+            setLiveSensorReadings({
+              moisture: Number(payload.moisture ?? 0),
+              temperature: Number(payload.temperature ?? 0),
+              humidity: Number(payload.humidity ?? 0),
+              ph: Number(payload.ph ?? 0),
+            })
+          }
+
+        } else {
+          // 2) more complex shapes: results keyed by filename or arrays
+          const predictions = payload?.results || payload
+          const all = Array.isArray(predictions) ? predictions : Object.values(predictions || {})
+
+          all.forEach((p: any) => {
+            // skip primitive entries (numbers, strings) when object was an aggregate map
+            if (p === null || typeof p === 'number' || typeof p === 'string') return
+
+            const preds = p?.predictions || p?.result?.predictions || []
+            preds.forEach((pr: any) => {
+              const cls = (pr.class || pr.label || '').toString()
+              const sc = Number(pr.score ?? pr.confidence ?? 0)
+              if (cls.toLowerCase().includes('leaf') || cls.toLowerCase().includes('disease')) vision = Math.max(vision, sc || 0)
+              if (cls.toLowerCase().includes('sound') || cls.toLowerCase().includes('stress')) audio = Math.max(audio, sc || 0)
+              if (category === 'sensors') sensor = Math.max(sensor, sc || 0)
+            })
+
+            // If the backend returned sensor readings directly, map them to live display
+            if (category === 'sensors') {
+              // Common payload shapes: p may be an object with keys, or p.raw may contain readings
+              const candidate = p?.raw && typeof p.raw === 'object' ? p.raw : p
+              if (candidate && (candidate.moisture !== undefined || candidate.temperature !== undefined || candidate.humidity !== undefined || candidate.ph !== undefined)) {
+                // if candidate is an array of readings
+                if (Array.isArray(candidate)) {
+                  const latest = candidate[candidate.length - 1]
+                  if (latest) {
+                    setLiveSensorReadings({
+                      moisture: Number(latest.moisture ?? 0),
+                      temperature: Number(latest.temperature ?? 0),
+                      humidity: Number(latest.humidity ?? 0),
+                      ph: Number(latest.ph ?? 0),
+                    })
+                    setLiveSensorDataSeries(candidate)
+                  }
+                } else {
+                  setLiveSensorReadings({
+                    moisture: Number(candidate.moisture ?? 0),
+                    temperature: Number(candidate.temperature ?? 0),
+                    humidity: Number(candidate.humidity ?? 0),
+                    ph: Number(candidate.ph ?? 0),
+                  })
+                }
+              }
+            }
+          })
+        }
+      }
+    } catch (e) {
+      console.error('Error mapping predictions', e)
+    }
+
+    // store this modality's raw payload so we can gate the multimodal analysis until all modalities are present
+    setModalityResults((prev) => ({ ...prev, [category]: data }))
+
+    // Determine required modalities
+    const required = ['images', 'audio', 'sensors', 'weather']
+    const missing = required.filter((m) => !((m in modalityResults) || m === category))
+    if (missing.length > 0) {
+      // do not compute overall yet; update debug preview and exit
+      const overall = Math.round((vision + audio + sensor) / 3)
+      setLastPredictInfo((prev) => prev || { category, time: new Date().toISOString(), preview: JSON.stringify(data).slice(0, 200) })
+      // show partial analysis only in debug, but do not set analysisResults
+      return
+    }
+
+    const overall = Math.round((vision + audio + sensor) / 3)
+    setAnalysisResults({ score: overall, riskData: { vision: Math.round(vision), audio: Math.round(audio), sensor: Math.round(sensor) } })
+    try {
+      const preview = JSON.stringify(data && data.result ? data.result : data).slice(0, 400)
+      setLastPredictInfo({ category, time: new Date().toISOString(), preview })
+    } catch (e) {
+      setLastPredictInfo({ category, time: new Date().toISOString(), preview: 'unserializable' })
     }
   }
 
@@ -53,8 +219,10 @@ export default function Dashboard() {
       {/* Header */}
       <DashboardHeader />
 
-      {/* Main Content */}
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+        <TrainingStatus />
+        {/* Main Content */}
+        
         {/* Page Title */}
         <div className="mb-8">
           <Link href="/" className="inline-flex items-center gap-2 text-green-600 hover:text-green-700 mb-4">
@@ -66,8 +234,33 @@ export default function Dashboard() {
         </div>
 
         <div className="mb-12">
-          <h2 className="text-2xl font-bold text-gray-900 mb-6">Real-Time Sensor Monitoring</h2>
-          <RealTimeSensorMonitor />
+          <div className="flex items-center gap-2 mb-6">
+            <h2 className="text-2xl font-bold text-gray-900">Real-Time Sensor Monitoring</h2>
+            <Tooltip content={<>Sensor readings come from uploaded CSV/JSON sensor files (timestamp, soil_moisture, temperature, humidity, ph). Use ISO timestamps and numeric values.</>}>
+              <Info className="w-4 h-4 text-gray-400" />
+            </Tooltip>
+          </div>
+          <div className="grid lg:grid-cols-3 gap-4 items-start">
+            <RealTimeSensorMonitor currentReadings={liveSensorReadings ?? undefined} sensorData={liveSensorDataSeries ?? undefined} />
+            <div className="lg:col-span-2 space-y-4">
+              <QuickSensorEntry onResult={handlePredictResult} onUpload={handleFileUpload} />
+              <WeatherFetcher onResult={handlePredictResult} />
+            </div>
+          </div>
+          <div className="mt-3">
+            <div className="p-3 bg-gray-50 border border-gray-200 rounded">
+              <p className="text-sm text-gray-600 font-medium">Last prediction (debug)</p>
+              {lastPredictInfo ? (
+                <div className="text-xs text-gray-700 mt-2">
+                  <p>Category: {lastPredictInfo.category}</p>
+                  <p>Time: {new Date(lastPredictInfo.time).toLocaleString()}</p>
+                  <pre className="mt-2 p-2 bg-white border rounded text-xs overflow-auto">{lastPredictInfo.preview}</pre>
+                </div>
+              ) : (
+                <p className="text-xs text-gray-500 mt-2">No prediction results received yet. Try Quick Sensor Entry or upload sensor CSV/JSON.</p>
+              )}
+            </div>
+          </div>
         </div>
 
         {/* Upload Panels Grid - Now 4 columns for multimodal data */}
@@ -80,6 +273,7 @@ export default function Dashboard() {
             fileType="image/*"
             category="images"
             onUpload={handleFileUpload}
+            onResult={handlePredictResult}
             uploadedCount={uploadedFiles.images}
           />
 
@@ -91,6 +285,7 @@ export default function Dashboard() {
             fileType="audio/*"
             category="audio"
             onUpload={handleFileUpload}
+            onResult={handlePredictResult}
             uploadedCount={uploadedFiles.audio}
           />
 
@@ -102,6 +297,7 @@ export default function Dashboard() {
             fileType=".csv,.json"
             category="sensors"
             onUpload={handleFileUpload}
+            onResult={handlePredictResult}
             uploadedCount={uploadedFiles.sensors}
           />
 
@@ -113,6 +309,7 @@ export default function Dashboard() {
             fileType=".csv,.json"
             category="weather"
             onUpload={handleFileUpload}
+            onResult={handlePredictResult}
             uploadedCount={uploadedFiles.weather}
           />
         </div>
@@ -143,7 +340,7 @@ export default function Dashboard() {
           </Card>
         </div>
 
-        {analysisResults && (
+        {analysisResults ? (
           <div className="mb-12">
             <h2 className="text-2xl font-bold text-gray-900 mb-6">Multimodal Analysis Results</h2>
             <AnalysisResults score={analysisResults.score} riskData={analysisResults.riskData} />
@@ -157,6 +354,29 @@ export default function Dashboard() {
                 <h3 className="text-xl font-bold text-gray-900 mb-4">Recommendations</h3>
                 <RecommendationsEngine score={analysisResults.score} riskData={analysisResults.riskData} />
               </div>
+            </div>
+          </div>
+        ) : (
+          <div className="mb-12">
+            <h2 className="text-2xl font-bold text-gray-900 mb-4">Multimodal Analysis</h2>
+            <div className="p-6 border rounded bg-yellow-50">
+              <p className="font-medium">Analysis withheld — missing data from these modalities:</p>
+              <ul className="mt-3 list-disc ml-6 text-sm text-gray-700">
+                {['images', 'audio', 'sensors', 'weather'].filter((m) => !(m in modalityResults)).map((m) => (
+                  <li key={m}>{m}</li>
+                ))}
+              </ul>
+              <p className="text-xs text-gray-600 mt-3">Upload the missing modalities or use Quick Sensor Entry / Weather Analyze to include data, then the Multimodal Analysis will appear.</p>
+            </div>
+            <div className="mt-4 p-4 border rounded bg-white">
+              <h3 className="font-semibold mb-2">Weather Score Bands</h3>
+              <ul className="text-sm text-gray-700">
+                <li><strong>0–30</strong> Severe risk — urgent action (irrigate/drain/protect)</li>
+                <li><strong>31–50</strong> High risk — scout & take corrective measures</li>
+                <li><strong>51–70</strong> Moderate risk — monitor closely</li>
+                <li><strong>71–85</strong> Good — mostly favorable</li>
+                <li><strong>86–100</strong> Optimal — ideal conditions</li>
+              </ul>
             </div>
           </div>
         )}

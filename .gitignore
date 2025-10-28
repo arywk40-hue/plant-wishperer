@@ -26,3 +26,22 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# macOS files
+.DS_Store
+
+# Python and Node junk
+__pycache__/
+node_modules/
+
+# Datasets and models
+*.h5
+*.json
+dataset/
+backend/
+model_training/
+model_server/
+model-jobs/
+
+# Temporary or local dirs
+app/api/debug/

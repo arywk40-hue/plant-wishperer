@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -21,6 +21,19 @@ import {
 
 export default function ReportsPage() {
   const [selectedPeriod, setSelectedPeriod] = useState("7d")
+  const [savedReports, setSavedReports] = useState<any[]>([])
+
+  // load saved reports (client-side only)
+  useEffect(() => {
+    let cancelled = false
+    fetch('/api/reports/list')
+      .then((r) => r.json())
+      .then((j) => {
+        if (!cancelled && j.ok && Array.isArray(j.reports)) setSavedReports(j.reports.reverse())
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [])
 
   // Mock data for health trends
   const healthTrendData = [
@@ -105,7 +118,7 @@ export default function ReportsPage() {
         </div>
 
         {/* Health Trend Chart */}
-        <Card className="p-6 border-green-200 mb-8">
+  <Card className="p-6 border-green-200 mb-8">
           <h2 className="text-2xl font-bold text-gray-900 mb-6">Health Score Trend</h2>
           <ResponsiveContainer width="100%" height={300}>
             <LineChart data={healthTrendData}>
@@ -140,14 +153,98 @@ export default function ReportsPage() {
         <Card className="p-6 border-green-200">
           <div className="flex items-center justify-between mb-6">
             <h2 className="text-2xl font-bold text-gray-900">Recent Reports</h2>
-            <Button className="bg-green-600 hover:bg-green-700 text-white flex items-center gap-2">
+            <Button className="bg-green-600 hover:bg-green-700 text-white flex items-center gap-2" onClick={() => {
+              try {
+                const payload = { healthTrendData, diseaseDetectionData, reports }
+                // download
+                const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+                const url = URL.createObjectURL(blob)
+                const a = document.createElement('a')
+                a.href = url
+                a.download = `plant-report-${Date.now()}.json`
+                document.body.appendChild(a)
+                a.click()
+                a.remove()
+                URL.revokeObjectURL(url)
+
+                // also persist to server
+                fetch('/api/reports/save', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(payload) })
+                  .then((r) => r.json())
+                  .then((j) => {
+                    if (j.ok && j.entry) setSavedReports((s) => [j.entry, ...s])
+                  })
+                  .catch(() => {})
+              } catch (e) {
+                console.error('Generate report failed', e)
+              }
+            }}>
               <Download className="w-4 h-4" />
               Generate Report
             </Button>
           </div>
 
           <div className="space-y-4">
-            {reports.map((report) => (
+            {/* show persisted savedReports first, then seeded reports */}
+            {savedReports.map((r) => (
+              <div key={r.id} className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:border-green-200 transition">
+                <div className="flex items-center gap-4 flex-1">
+                  <div className="w-12 h-12 bg-green-100 rounded-lg flex items-center justify-center">
+                    <TrendingUp className="w-6 h-6 text-green-600" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="font-semibold text-gray-900">{r.payload?.title || 'Saved Report'}</h3>
+                    <p className="text-sm text-gray-600">{new Date(r.createdAt).toLocaleString()}</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="text-right">
+                    <p className="text-2xl font-bold text-green-600">{r.payload?.score ?? '-'}</p>
+                    <p className="text-xs text-gray-600">Health Score</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="border-green-200 text-green-600 hover:bg-green-50 bg-transparent"
+                      onClick={() => {
+                        const blob = new Blob([JSON.stringify(r.payload, null, 2)], { type: 'application/json' })
+                        const url = URL.createObjectURL(blob)
+                        const a = document.createElement('a')
+                        a.href = url
+                        a.download = `plant-report-${r.id}.json`
+                        document.body.appendChild(a)
+                        a.click()
+                        a.remove()
+                        URL.revokeObjectURL(url)
+                      }}
+                    >
+                      <Download className="w-4 h-4" />
+                    </Button>
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      onClick={async () => {
+                        if (!confirm('Delete this report? This cannot be undone.')) return
+                        try {
+                          const res = await fetch('/api/reports/delete', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: r.id }) })
+                          const j = await res.json()
+                          if (j.ok) setSavedReports((s) => s.filter((x) => x.id !== r.id))
+                          else alert('Delete failed: ' + (j.error || 'unknown'))
+                        } catch (e) {
+                          alert('Delete failed')
+                        }
+                      }}
+                      className="bg-red-50 text-red-600 border-red-100"
+                    >
+                      Delete
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            {/* fallback to seeded reports for display when no saved reports present */}
+            {savedReports.length === 0 && reports.map((report) => (
               <div
                 key={report.id}
                 className="flex items-center justify-between p-4 bg-gray-50 rounded-lg border border-gray-200 hover:border-green-200 transition"

@@ -6,6 +6,8 @@ import { useState, useRef } from "react"
 import { Card } from "@/components/ui/card"
 import { Button } from "@/components/ui/button"
 import { Upload, CheckCircle } from "lucide-react"
+import { Info } from "lucide-react"
+import Tooltip from "@/components/ui/tooltip"
 import type { LucideIcon } from "lucide-react"
 
 interface UploadPanelProps {
@@ -16,6 +18,7 @@ interface UploadPanelProps {
   fileType: string
   category: string
   onUpload: (category: string, count: number) => void
+  onResult?: (category: string, result: any) => void
   uploadedCount: number
 }
 
@@ -27,6 +30,7 @@ export default function UploadPanel({
   fileType,
   category,
   onUpload,
+  onResult,
   uploadedCount,
 }: UploadPanelProps) {
   const [isDragging, setIsDragging] = useState(false)
@@ -71,11 +75,13 @@ export default function UploadPanel({
         form.append("file", new Blob([""], { type: "text/plain" }), "placeholder.txt")
       }
 
-      const res = await fetch("/api/model/predict", { method: "POST", body: form })
+  form.append("category", category)
+  const res = await fetch("/api/model/predict", { method: "POST", body: form })
       const data = await res.json()
       if (data && data.ok) {
         // call onUpload with file count and update possible UI
         onUpload(category, fileCount)
+        if (onResult) onResult(category, data)
       } else {
         console.error("Predict failed", data)
       }
@@ -112,7 +118,32 @@ export default function UploadPanel({
           )}
         </div>
 
-        <h3 className="text-lg font-semibold text-gray-900 mb-2">{title}</h3>
+        <div className="flex items-center justify-center gap-2 mb-2">
+          <h3 className="text-lg font-semibold text-gray-900">{title}</h3>
+          <Tooltip
+            content={
+              category === "images" ? (
+                <>
+                  Best: high-resolution RGB images with clear leaf/plant views. Avoid heavy motion blur and use natural daylight.
+                </>
+              ) : category === "audio" ? (
+                <>
+                  Upload WAV/FLAC recordings (1–10s) sampled at ≥16kHz. Minimize background noise; record close to plant stems.
+                </>
+              ) : category === "sensors" ? (
+                <>
+                  CSV/JSON with columns: timestamp (ISO), soil_moisture, temperature, humidity, ph. Numeric values only.
+                </>
+              ) : (
+                <>
+                  CSV/JSON with time-series or sensor columns. Include ISO timestamps and numeric values for best results.
+                </>
+              )
+            }
+          >
+            <Info className="w-4 h-4 text-gray-400" />
+          </Tooltip>
+        </div>
         <p className="text-sm text-gray-600 mb-4">{description}</p>
 
         {uploadedCount > 0 && (

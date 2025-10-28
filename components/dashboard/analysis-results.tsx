@@ -13,9 +13,10 @@ interface AnalysisResultsProps {
     audio: number
     sensor: number
   }
+  predictions?: Array<{ source: string; class: string; score: number }>
 }
 
-export default function AnalysisResults({ score, riskData }: AnalysisResultsProps) {
+export default function AnalysisResults({ score, riskData, predictions }: AnalysisResultsProps) {
   const getHealthStatus = (score: number) => {
     if (score >= 90) return { label: "Excellent Condition", color: "bg-green-600", textColor: "text-green-600" }
     if (score >= 70) return { label: "Good Condition", color: "bg-yellow-500", textColor: "text-yellow-600" }
@@ -107,6 +108,22 @@ export default function AnalysisResults({ score, riskData }: AnalysisResultsProp
 
       {/* Insights & Recommendations */}
       <Card className="p-6 border-green-200">
+        {predictions && predictions.length > 0 && (
+          <div className="mb-4">
+            <h4 className="text-sm font-semibold mb-2">Detailed Predictions</h4>
+            <ul className="space-y-2">
+              {predictions.map((p: { source: string; class: string; score: number }, idx: number) => (
+                <li key={idx} className="flex justify-between items-center bg-white p-2 rounded-lg border">
+                  <div>
+                    <div className="text-sm font-medium">{p.source}</div>
+                    <div className="text-xs text-gray-500">{p.class}</div>
+                  </div>
+                  <div className="text-sm font-semibold text-gray-700">{Math.round(p.score * 100) / 100}</div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
         <h3 className="text-lg font-semibold text-gray-900 mb-4 flex items-center gap-2">
           <AlertCircle className="w-5 h-5 text-green-600" />
           Key Insights

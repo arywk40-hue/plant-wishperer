@@ -3,20 +3,51 @@
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Leaf, MessageCircle } from "lucide-react"
-import { useState } from "react"
+import { useState, useEffect } from "react"
 import { DEFAULT_DATASET_PATH } from "@/config/analysis-config"
 
 export default function DashboardHeader() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [isTraining, setIsTraining] = useState(false)
+  const [trainingJobId, setTrainingJobId] = useState<string | null>(null)
+  const [trainingStatus, setTrainingStatus] = useState<string | null>(null)
+
+  // Poll training status when a job is present
+  useEffect(() => {
+    if (!trainingJobId) return
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const res = await fetch(`/api/model/train/status?jobId=${trainingJobId}`)
+        const data = await res.json()
+        if (!cancelled) setTrainingStatus(data?.status || "unknown")
+        if (data?.status && data.status !== "running") {
+          setTimeout(() => setTrainingJobId(null), 3000)
+        }
+      } catch (e) {
+        console.error(e)
+      }
+      if (!cancelled) setTimeout(poll, 3000)
+    }
+    poll()
+    return () => {
+      cancelled = true
+    }
+  }, [trainingJobId])
 
   const triggerTraining = async () => {
     try {
       setIsTraining(true)
-  const res = await fetch('/api/model/train', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ datasetPath: DEFAULT_DATASET_PATH, epochs: 3 }) })
+      const res = await fetch('/api/model/train', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ datasetPath: DEFAULT_DATASET_PATH, epochs: 3 }) })
       const data = await res.json()
       if (data?.jobId) {
-        alert('Training job enqueued: ' + data.jobId)
+        setTrainingJobId(data.jobId)
+        setTrainingStatus('queued')
+        try {
+          localStorage.setItem('trainingJobId', data.jobId)
+        } catch (e) {
+          // ignore
+        }
       } else {
         alert('Training enqueue failed')
       }
