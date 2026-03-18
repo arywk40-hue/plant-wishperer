@@ -1,1 +1,6 @@
-{"datasetPath":"/data/dataset.csv","epochs":3}
+{
+  "datasetPath": "/data/dataset.csv",
+  "epochs": 3,
+  "status": "completed",
+  "progress": 100
+}

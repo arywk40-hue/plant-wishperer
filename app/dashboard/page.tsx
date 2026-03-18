@@ -52,7 +52,7 @@ export default function Dashboard() {
   }
 
   const buildDiseaseDetectionData = (visionScore: number, audioScore: number, sensorScore: number) => {
-    const detections = []
+    const detections: Array<{ name: string; count: number; severity: string }> = []
 
     if (visionScore < 60) {
       detections.push({ name: "Visual Stress", count: 1, severity: getSeverityLabel(visionScore) })
