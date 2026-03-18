@@ -42,7 +42,7 @@ export const RECOMMENDATION_TRIGGERS = {
 export const ASSISTANT_CONFIG = {
   provider: "gemini",
   apiKeyEnv: "GEMINI_API_KEY",
-  defaultModel: "gpt-4o-mini",
+  defaultModel: "gemini-2.5-flash",
 }
 
 // Optionally set a provider URL for server-side API calls. Leave empty to require

@@ -1,4 +1,5 @@
 import { GoogleGenAI, GenerateContentParameters } from "@google/genai";
+import { ASSISTANT_CONFIG } from "@/config/analysis-config";
 
 // --------------------------------------------------------------------------
 // 1. KNOWLEDGE BASE INTERFACES AND DATA
@@ -163,7 +164,11 @@ const ai = new GoogleGenAI({});
 export async function callAssistant(req: AssistantRequest): Promise<AssistantResponse> {
   
   // Check if API key is configured for external use
-  const isGeminiConfigured = !!process.env.GEMINI_API_KEY || !!process.env.GOOGLE_API_KEY;
+  const configuredApiKey =
+    process.env[ASSISTANT_CONFIG.apiKeyEnv] ||
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY;
+  const isGeminiConfigured = !!configuredApiKey;
 
   if (!isGeminiConfigured) {
     console.log('Using local PlantWhisperer assistant (GEMINI_API_KEY not configured)');
@@ -175,7 +180,7 @@ export async function callAssistant(req: AssistantRequest): Promise<AssistantRes
 
   // Use the external Gemini API
   try {
-    const model = req.model || "gemini-2.5-flash"; // Use a sensible default model
+    const model = req.model || ASSISTANT_CONFIG.defaultModel;
     
     // Define the System Instruction (context for the model)
     const systemInstruction = `You are PlantWhisperer Pro, an AI agricultural assistant. Provide helpful, accurate advice about crop health, disease identification, farming best practices, and sensor data interpretation. The context of this application is early problem detection using drone imagery, soil sensors, and plant acoustics. Focus on practical, actionable advice.`;

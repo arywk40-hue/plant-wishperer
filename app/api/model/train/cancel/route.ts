@@ -14,7 +14,9 @@ export async function POST(req: Request) {
 
     const content = JSON.parse(fs.readFileSync(jobPath, "utf-8"))
     content.status = "cancelled"
-    fs.writeFileSync(jobPath, JSON.stringify(content))
+    content.progress = 0
+    content.completedAt = new Date().toISOString()
+    fs.writeFileSync(jobPath, JSON.stringify(content, null, 2))
     return NextResponse.json({ ok: true })
   } catch (err: any) {
     return NextResponse.json({ ok: false, error: err.message }, { status: 500 })

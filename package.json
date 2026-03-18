@@ -6,7 +6,8 @@
     "build": "next build",
     "dev": "next dev",
     "lint": "eslint .",
-    "start": "next start"
+    "start": "next start",
+    "train:worker": "python3 scripts/training_worker.py"
   },
   "dependencies": {
     "@google/genai": "^1.25.0",

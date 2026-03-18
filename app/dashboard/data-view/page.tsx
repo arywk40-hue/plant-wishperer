@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useState } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card } from "@/components/ui/card"
@@ -20,84 +20,38 @@ import {
   Pie,
   Cell,
 } from "recharts"
+import {
+  buildDataViewRows,
+  buildRiskDistribution,
+  normalizeSavedReports,
+  type SavedReportEntry,
+} from "@/lib/report-utils"
 
 export default function DataViewPage() {
   const [searchTerm, setSearchTerm] = useState("")
   const [filterType, setFilterType] = useState("all")
   const [viewMode, setViewMode] = useState<"table" | "chart">("table")
+  const [savedReports, setSavedReports] = useState<SavedReportEntry[]>([])
 
-  // Mock data for table view
-  const tableData = [
-    {
-      id: 1,
-      date: "2025-01-20",
-      field: "Field A",
-      healthScore: 82,
-      visionRisk: 18,
-      audioRisk: 16,
-      sensorRisk: 18,
-      status: "Healthy",
-    },
-    {
-      id: 2,
-      date: "2025-01-19",
-      field: "Field B",
-      healthScore: 78,
-      visionRisk: 22,
-      audioRisk: 20,
-      sensorRisk: 22,
-      status: "Monitor",
-    },
-    {
-      id: 3,
-      date: "2025-01-18",
-      field: "Field A",
-      healthScore: 76,
-      visionRisk: 24,
-      audioRisk: 22,
-      sensorRisk: 24,
-      status: "Monitor",
-    },
-    {
-      id: 4,
-      date: "2025-01-17",
-      field: "Field C",
-      healthScore: 85,
-      visionRisk: 15,
-      audioRisk: 12,
-      sensorRisk: 15,
-      status: "Healthy",
-    },
-    {
-      id: 5,
-      date: "2025-01-16",
-      field: "Field B",
-      healthScore: 72,
-      visionRisk: 28,
-      audioRisk: 25,
-      sensorRisk: 28,
-      status: "Alert",
-    },
-  ]
+  useEffect(() => {
+    let cancelled = false
 
-  // Mock data for scatter plot
-  const scatterData = [
-    { x: 18, y: 82, field: "Field A" },
-    { x: 22, y: 78, field: "Field B" },
-    { x: 24, y: 76, field: "Field A" },
-    { x: 15, y: 85, field: "Field C" },
-    { x: 28, y: 72, field: "Field B" },
-    { x: 20, y: 80, field: "Field A" },
-    { x: 25, y: 75, field: "Field C" },
-  ]
+    fetch("/api/reports/list")
+      .then((response) => response.json())
+      .then((json) => {
+        if (!cancelled && json.ok && Array.isArray(json.reports)) {
+          setSavedReports(json.reports)
+        }
+      })
+      .catch(() => {})
 
-  // Mock data for risk distribution
-  const riskDistribution = [
-    { name: "Low Risk", value: 35, color: "#16a34a" },
-    { name: "Medium Risk", value: 45, color: "#eab308" },
-    { name: "High Risk", value: 20, color: "#dc2626" },
-  ]
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
+  const normalizedReports = normalizeSavedReports(savedReports).filter((report) => report.type !== "Summary")
+  const tableData = buildDataViewRows(normalizedReports)
   const filteredData = tableData.filter((row) => {
     const matchesSearch =
       row.field.toLowerCase().includes(searchTerm.toLowerCase()) ||
@@ -110,30 +64,36 @@ export default function DataViewPage() {
     if (filterType === "alert") return matchesSearch && row.status === "Alert"
     return matchesSearch
   })
+  const filteredIds = new Set(filteredData.map((row) => String(row.id)))
+  const filteredReports = normalizedReports.filter((report) => filteredIds.has(String(report.id)))
+  const scatterData = filteredData.map((row) => ({
+    x: row.sensorRisk,
+    y: row.healthScore,
+    field: row.field,
+  }))
+  const riskDistribution = buildRiskDistribution(filteredReports)
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-green-50 via-white to-blue-50">
       <DashboardHeader />
 
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Header */}
         <div className="mb-8">
           <Link href="/dashboard" className="inline-flex items-center gap-2 text-green-600 hover:text-green-700 mb-4">
             <ArrowLeft className="w-4 h-4" />
             Back to Dashboard
           </Link>
           <h1 className="text-4xl font-bold text-gray-900 mb-2">Data View</h1>
-          <p className="text-gray-600">Explore and visualize your crop health data</p>
+          <p className="text-gray-600">Explore saved crop-health analyses from your report history</p>
         </div>
 
-        {/* Controls */}
         <div className="flex flex-col md:flex-row gap-4 mb-8">
           <div className="flex-1 relative">
             <Search className="absolute left-3 top-3 w-5 h-5 text-gray-400" />
             <Input
               placeholder="Search by field, date, or status..."
               value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              onChange={(event) => setSearchTerm(event.target.value)}
               className="pl-10"
             />
           </div>
@@ -169,8 +129,15 @@ export default function DataViewPage() {
           </div>
         </div>
 
-        {/* Table View */}
-        {viewMode === "table" && (
+        {tableData.length === 0 && (
+          <Card className="p-6 border-green-200 mb-8">
+            <p className="text-sm text-gray-600">
+              No saved analysis records are available yet. Run the dashboard analysis flow to populate this page.
+            </p>
+          </Card>
+        )}
+
+        {viewMode === "table" && filteredData.length > 0 && (
           <Card className="border-green-200 overflow-hidden">
             <div className="overflow-x-auto">
               <Table>
@@ -217,24 +184,27 @@ export default function DataViewPage() {
           </Card>
         )}
 
-        {/* Chart View */}
-        {viewMode === "chart" && (
+        {viewMode === "table" && tableData.length > 0 && filteredData.length === 0 && (
+          <Card className="p-6 border-green-200">
+            <p className="text-sm text-gray-600">No saved records match the current filters.</p>
+          </Card>
+        )}
+
+        {viewMode === "chart" && tableData.length > 0 && (
           <div className="grid lg:grid-cols-2 gap-8">
-            {/* Scatter Plot */}
             <Card className="p-6 border-green-200">
-              <h3 className="text-xl font-bold text-gray-900 mb-4">Risk vs Health Score</h3>
+              <h3 className="text-xl font-bold text-gray-900 mb-4">Sensor Risk vs Health Score</h3>
               <ResponsiveContainer width="100%" height={300}>
                 <ScatterChart margin={{ top: 20, right: 20, bottom: 20, left: 20 }}>
                   <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="x" name="Risk %" />
+                  <XAxis dataKey="x" name="Sensor Risk %" />
                   <YAxis dataKey="y" name="Health Score" />
                   <Tooltip cursor={{ strokeDasharray: "3 3" }} />
-                  <Scatter name="Fields" data={scatterData} fill="#16a34a" />
+                  <Scatter name="Reports" data={scatterData} fill="#16a34a" />
                 </ScatterChart>
               </ResponsiveContainer>
             </Card>
 
-            {/* Risk Distribution */}
             <Card className="p-6 border-green-200">
               <h3 className="text-xl font-bold text-gray-900 mb-4">Risk Distribution</h3>
               <ResponsiveContainer width="100%" height={300}>
@@ -259,30 +229,6 @@ export default function DataViewPage() {
             </Card>
           </div>
         )}
-
-        {/* Data Summary */}
-        <div className="grid md:grid-cols-4 gap-4 mt-8">
-          <Card className="p-6 border-green-200">
-            <p className="text-sm text-gray-600 mb-2">Total Records</p>
-            <p className="text-3xl font-bold text-green-600">{filteredData.length}</p>
-          </Card>
-          <Card className="p-6 border-green-200">
-            <p className="text-sm text-gray-600 mb-2">Average Health Score</p>
-            <p className="text-3xl font-bold text-green-600">
-              {Math.round(filteredData.reduce((sum, row) => sum + row.healthScore, 0) / filteredData.length)}
-            </p>
-          </Card>
-          <Card className="p-6 border-green-200">
-            <p className="text-sm text-gray-600 mb-2">Healthy Fields</p>
-            <p className="text-3xl font-bold text-green-600">
-              {filteredData.filter((r) => r.status === "Healthy").length}
-            </p>
-          </Card>
-          <Card className="p-6 border-green-200">
-            <p className="text-sm text-gray-600 mb-2">Alert Fields</p>
-            <p className="text-3xl font-bold text-red-600">{filteredData.filter((r) => r.status === "Alert").length}</p>
-          </Card>
-        </div>
       </main>
     </div>
   )

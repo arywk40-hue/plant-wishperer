@@ -21,19 +21,57 @@ interface AnalysisResult {
   timestamp: string
 }
 
-// Simulated ML model inference functions
-function analyzeVisionData(imageData?: string): number {
-  if (!imageData) return 0
-  // Simulate vision analysis - in production, this would call a real ML model
-  const baseScore = 60 + Math.random() * 30
-  return Math.min(100, Math.round(baseScore))
+const NEUTRAL_MODEL_SCORE = 65
+
+async function fetchRemoteScore(endpoint: "image" | "audio", rawData: string) {
+  const modelServer = process.env.MODEL_SERVER_URL
+  if (!modelServer) return null
+
+  const response = await fetch(`${modelServer}/predict/${endpoint}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ data: rawData }),
+  })
+
+  if (!response.ok) {
+    throw new Error(`Model server returned ${response.status} for ${endpoint}`)
+  }
+
+  const payload = await response.json()
+  const score =
+    payload?.score ??
+    payload?.result?.score ??
+    payload?.healthScore ??
+    payload?.overall ??
+    payload?.confidence
+
+  return typeof score === "number" ? Math.round(Math.max(0, Math.min(100, score))) : null
 }
 
-function analyzeAudioData(audioData?: string): number {
+async function analyzeVisionData(imageData?: string): Promise<number> {
+  if (!imageData) return 0
+
+  try {
+    const score = await fetchRemoteScore("image", imageData)
+    if (score !== null) return score
+  } catch (error) {
+    console.error("Vision model server error:", error)
+  }
+
+  return NEUTRAL_MODEL_SCORE
+}
+
+async function analyzeAudioData(audioData?: string): Promise<number> {
   if (!audioData) return 0
-  // Simulate audio analysis - in production, this would call a real ML model
-  const baseScore = 55 + Math.random() * 35
-  return Math.min(100, Math.round(baseScore))
+
+  try {
+    const score = await fetchRemoteScore("audio", audioData)
+    if (score !== null) return score
+  } catch (error) {
+    console.error("Audio model server error:", error)
+  }
+
+  return NEUTRAL_MODEL_SCORE
 }
 
 function analyzeSensorData(sensorData?: {
@@ -126,9 +164,8 @@ export async function POST(request: NextRequest) {
   try {
     const body: AnalysisRequest = await request.json()
 
-    // Perform multimodal analysis
-    const visionScore = analyzeVisionData(body.imageData)
-    const audioScore = analyzeAudioData(body.audioData)
+    const visionScore = await analyzeVisionData(body.imageData)
+    const audioScore = await analyzeAudioData(body.audioData)
     const sensorScore = analyzeSensorData(body.sensorData)
 
     // Calculate overall score

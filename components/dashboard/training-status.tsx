@@ -22,9 +22,8 @@ export default function TrainingStatus() {
         const json = await res.json()
         if (!cancelled) {
           setStatus(json?.status || "unknown")
-          // naive progress mapping
-          setProgress(json?.status === "running" ? 50 : json?.status === "completed" ? 100 : json?.status === "queued" ? 10 : 0)
-          if (json?.status === "completed" || json?.status === "failed") {
+          setProgress(typeof json?.progress === "number" ? json.progress : json?.status === "running" ? 50 : json?.status === "completed" ? 100 : json?.status === "queued" ? 10 : 0)
+          if (json?.status === "completed" || json?.status === "failed" || json?.status === "cancelled") {
             localStorage.removeItem("trainingJobId")
             setTimeout(() => {
               setJobId(null)

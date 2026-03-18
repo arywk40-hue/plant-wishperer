@@ -17,6 +17,9 @@ import { Info } from "lucide-react"
 import AlertSystem from "@/components/dashboard/alert-system"
 import RecommendationsEngine from "@/components/dashboard/recommendations-engine"
 import TrainingStatus from "@/components/dashboard/training-status"
+import { getHealthStatusLabel, getSeverityLabel } from "@/lib/report-utils"
+
+type ModalityCategory = "images" | "audio" | "sensors" | "weather"
 
 export default function Dashboard() {
   const [uploadedFiles, setUploadedFiles] = useState<Record<string, number>>({
@@ -31,6 +34,7 @@ export default function Dashboard() {
     riskData: { vision: number; audio: number; sensor: number }
   } | null>(null)
   const [modalityResults, setModalityResults] = useState<Record<string, any>>({})
+  const [modalityScores, setModalityScores] = useState<Partial<Record<ModalityCategory, number>>>({})
   const [liveSensorReadings, setLiveSensorReadings] = useState<{
     moisture: number
     temperature: number
@@ -47,24 +51,37 @@ export default function Dashboard() {
     }))
   }
 
+  const buildDiseaseDetectionData = (visionScore: number, audioScore: number, sensorScore: number) => {
+    const detections = []
+
+    if (visionScore < 60) {
+      detections.push({ name: "Visual Stress", count: 1, severity: getSeverityLabel(visionScore) })
+    }
+    if (audioScore < 60) {
+      detections.push({ name: "Acoustic Stress", count: 1, severity: getSeverityLabel(audioScore) })
+    }
+    if (sensorScore < 60) {
+      detections.push({ name: "Environmental Stress", count: 1, severity: getSeverityLabel(sensorScore) })
+    }
+
+    if (detections.length === 0) {
+      detections.push({ name: "Healthy Signals", count: 1, severity: "Low" })
+    }
+
+    return detections
+  }
+
   const handlePredictResult = (category: string, data: any) => {
-  // Map backend response to analysisResults shape. Support multiple shapes:
-    //  - { overall, vision, audio, sensor } (model-manager fallback or aggregated result)
-    //  - { results: { filename: { predictions: [...] } } } or array of per-file results
-    //  - single sensor payload {moisture, temperature, humidity, ph} or series
     const payload = data?.result || data
 
-    // conservative defaults
     let vision = 65
-    let audio = 60
+    let audio = 65
     let sensor = 70
 
     try {
       if (payload) {
-        // special-case Open-Meteo-like weather payloads: compute a simple weather score from hourly data
         if (category === 'weather' && payload.hourly) {
           try {
-            // Prefer server-provided weatherScore when model/server calculates it
             if (payload.weatherScore !== undefined) {
               sensor = Number(payload.weatherScore)
             } else {
@@ -84,18 +101,14 @@ export default function Dashboard() {
               const avgHum = avg(hums)
               const humVar = Math.sqrt(variance(hums))
               const totalPrecip = prec.length ? prec.reduce((a: number, b: number) => a + b, 0) : 0
-              // PM2.5 array may be present as pm2_5 or pm25 depending on API
               const pmArr: number[] = hourly.pm2_5 || hourly.pm25 || []
               const avgPM25 = (pmArr.length ? pmArr.reduce((a, b) => a + b, 0) / pmArr.length : undefined)
 
-              // Tuned weighted scoring (more sensitive)
-              // Increase multipliers so deviations and variability reduce score more noticeably.
               const tempPenalty = Math.min(80, Math.abs(avgTemp - 25) * 3 + tempVar * 1.0)
               const humPenalty = avgHum < 50 ? (50 - avgHum) * 0.8 + humVar * 0.5 : humVar * 0.5
               const precipPenalty = Math.min(60, totalPrecip * 0.3)
 
               let weatherScore = 100 - tempPenalty - humPenalty - precipPenalty
-              // apply AQI-style penalty: mild for 25-50, larger for >50
               if (avgPM25 !== undefined) {
                 if (avgPM25 > 150) weatherScore -= 30
                 else if (avgPM25 > 100) weatherScore -= 20
@@ -105,30 +118,18 @@ export default function Dashboard() {
               weatherScore = Math.max(0, Math.min(100, Math.round(weatherScore)))
               sensor = Math.round(weatherScore)
 
-              // expose pm2_5 back into payload for UI
               if (avgPM25 !== undefined) payload.avgPM25 = Number(avgPM25.toFixed(2))
-
-              // send to server debug logger for calibration (non-blocking)
-              try {
-                fetch('/api/debug/weather-log', {
-                  method: 'POST',
-                  headers: { 'content-type': 'application/json' },
-                  body: JSON.stringify({ payload, weatherScore: sensor, ts: new Date().toISOString() }),
-                }).catch(() => {})
-              } catch (e) {}
             }
           } catch (err) {
             console.error('Error computing weather score', err)
           }
         }
 
-        // 1) direct aggregate shape from model-manager fallback or server
         if (typeof payload === 'object' && (payload.vision !== undefined || payload.audio !== undefined || payload.sensor !== undefined || payload.overall !== undefined)) {
-          vision = Number(payload.vision ?? vision)
-          audio = Number(payload.audio ?? audio)
-          sensor = Number(payload.sensor ?? sensor)
+          vision = Number(payload.vision ?? payload.overall ?? vision)
+          audio = Number(payload.audio ?? payload.overall ?? audio)
+          sensor = Number(payload.sensor ?? payload.overall ?? sensor)
 
-          // map sensor readings if present directly
           if (category === 'sensors' && (payload.moisture !== undefined || payload.temperature !== undefined || payload.humidity !== undefined || payload.ph !== undefined)) {
             setLiveSensorReadings({
               moisture: Number(payload.moisture ?? 0),
@@ -137,14 +138,15 @@ export default function Dashboard() {
               ph: Number(payload.ph ?? 0),
             })
           }
+          if (category === 'sensors' && Array.isArray(payload.sensorDataSeries)) {
+            setLiveSensorDataSeries(payload.sensorDataSeries)
+          }
 
         } else {
-          // 2) more complex shapes: results keyed by filename or arrays
           const predictions = payload?.results || payload
           const all = Array.isArray(predictions) ? predictions : Object.values(predictions || {})
 
           all.forEach((p: any) => {
-            // skip primitive entries (numbers, strings) when object was an aggregate map
             if (p === null || typeof p === 'number' || typeof p === 'string') return
 
             const preds = p?.predictions || p?.result?.predictions || []
@@ -156,12 +158,9 @@ export default function Dashboard() {
               if (category === 'sensors') sensor = Math.max(sensor, sc || 0)
             })
 
-            // If the backend returned sensor readings directly, map them to live display
             if (category === 'sensors') {
-              // Common payload shapes: p may be an object with keys, or p.raw may contain readings
               const candidate = p?.raw && typeof p.raw === 'object' ? p.raw : p
               if (candidate && (candidate.moisture !== undefined || candidate.temperature !== undefined || candidate.humidity !== undefined || candidate.ph !== undefined)) {
-                // if candidate is an array of readings
                 if (Array.isArray(candidate)) {
                   const latest = candidate[candidate.length - 1]
                   if (latest) {
@@ -190,22 +189,62 @@ export default function Dashboard() {
       console.error('Error mapping predictions', e)
     }
 
-    // store this modality's raw payload so we can gate the multimodal analysis until all modalities are present
-    setModalityResults((prev) => ({ ...prev, [category]: data }))
+    const nextModalityResults = { ...modalityResults, [category]: data }
+    setModalityResults(nextModalityResults)
 
-    // Determine required modalities
-    const required = ['images', 'audio', 'sensors', 'weather']
-    const missing = required.filter((m) => !((m in modalityResults) || m === category))
+    const nextModalityScores = { ...modalityScores }
+    if (category === "images") nextModalityScores.images = Math.round(vision)
+    if (category === "audio") nextModalityScores.audio = Math.round(audio)
+    if (category === "sensors") nextModalityScores.sensors = Math.round(sensor)
+    if (category === "weather") nextModalityScores.weather = Math.round(sensor)
+    setModalityScores(nextModalityScores)
+
+    const required: ModalityCategory[] = ['images', 'audio', 'sensors', 'weather']
+    const missing = required.filter((key) => nextModalityScores[key] === undefined)
     if (missing.length > 0) {
-      // do not compute overall yet; update debug preview and exit
-      const overall = Math.round((vision + audio + sensor) / 3)
-      setLastPredictInfo((prev) => prev || { category, time: new Date().toISOString(), preview: JSON.stringify(data).slice(0, 200) })
-      // show partial analysis only in debug, but do not set analysisResults
+      setLastPredictInfo({ category, time: new Date().toISOString(), preview: JSON.stringify(data).slice(0, 200) })
       return
     }
 
-    const overall = Math.round((vision + audio + sensor) / 3)
-    setAnalysisResults({ score: overall, riskData: { vision: Math.round(vision), audio: Math.round(audio), sensor: Math.round(sensor) } })
+    const sensorInputs = [nextModalityScores.sensors, nextModalityScores.weather].filter(
+      (value): value is number => typeof value === "number",
+    )
+    const combinedSensorScore = sensorInputs.length
+      ? Math.round(sensorInputs.reduce((sum, value) => sum + value, 0) / sensorInputs.length)
+      : 70
+    const aggregatedRiskData = {
+      vision: nextModalityScores.images ?? 65,
+      audio: nextModalityScores.audio ?? 65,
+      sensor: combinedSensorScore,
+    }
+    const overall = Math.round((aggregatedRiskData.vision + aggregatedRiskData.audio + aggregatedRiskData.sensor) / 3)
+    setAnalysisResults({ score: overall, riskData: aggregatedRiskData })
+
+    const reportPayload = {
+      title: `Analysis Run ${new Date().toLocaleString()}`,
+      date: new Date().toISOString(),
+      type: "Analysis",
+      status: getHealthStatusLabel(overall),
+      score: overall,
+      fieldId: "Primary Field",
+      riskData: aggregatedRiskData,
+      modalityScores: nextModalityScores,
+      diseaseDetectionData: buildDiseaseDetectionData(
+        aggregatedRiskData.vision,
+        aggregatedRiskData.audio,
+        aggregatedRiskData.sensor,
+      ),
+      source: "dashboard_analysis",
+    }
+
+    fetch('/api/reports/save', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(reportPayload),
+    }).catch((error) => {
+      console.error('Failed to persist dashboard analysis report', error)
+    })
+
     try {
       const preview = JSON.stringify(data && data.result ? data.result : data).slice(0, 400)
       setLastPredictInfo({ category, time: new Date().toISOString(), preview })

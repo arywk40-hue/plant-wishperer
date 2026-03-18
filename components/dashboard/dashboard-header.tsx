@@ -12,6 +12,11 @@ export default function DashboardHeader() {
   const [trainingJobId, setTrainingJobId] = useState<string | null>(null)
   const [trainingStatus, setTrainingStatus] = useState<string | null>(null)
 
+  useEffect(() => {
+    const storedJobId = localStorage.getItem("trainingJobId")
+    if (storedJobId) setTrainingJobId(storedJobId)
+  }, [])
+
   // Poll training status when a job is present
   useEffect(() => {
     if (!trainingJobId) return
@@ -21,8 +26,12 @@ export default function DashboardHeader() {
         const res = await fetch(`/api/model/train/status?jobId=${trainingJobId}`)
         const data = await res.json()
         if (!cancelled) setTrainingStatus(data?.status || "unknown")
-        if (data?.status && data.status !== "running") {
-          setTimeout(() => setTrainingJobId(null), 3000)
+        if (data?.status && ["completed", "failed", "cancelled"].includes(data.status)) {
+          localStorage.removeItem("trainingJobId")
+          setTimeout(() => {
+            setTrainingJobId(null)
+            setTrainingStatus(null)
+          }, 3000)
         }
       } catch (e) {
         console.error(e)
@@ -91,8 +100,12 @@ export default function DashboardHeader() {
               Export Data
             </Button>
           </Link>
-          <Button onClick={triggerTraining} className="bg-orange-600 hover:bg-orange-700 text-white flex items-center gap-2">
-            {isTraining ? 'Enqueuing...' : 'Train Model'}
+          <Button
+            onClick={triggerTraining}
+            disabled={isTraining || !!trainingJobId}
+            className="bg-orange-600 hover:bg-orange-700 text-white flex items-center gap-2 disabled:opacity-70"
+          >
+            {isTraining ? 'Enqueuing...' : trainingJobId ? `Training: ${trainingStatus || "queued"}` : 'Train Model'}
           </Button>
           <Link href="/dashboard/assistant">
             <Button className="bg-green-600 hover:bg-green-700 text-white flex items-center gap-2">
