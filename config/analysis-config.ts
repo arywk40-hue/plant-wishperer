@@ -38,11 +38,11 @@ export const RECOMMENDATION_TRIGGERS = {
   maintenanceScore: 75,
 }
 
-// Assistant / Gemini config (placeholder - keep keys out of source control)
+// Assistant provider config (placeholder - keep keys out of source control)
 export const ASSISTANT_CONFIG = {
-  provider: "gemini",
-  apiKeyEnv: "GEMINI_API_KEY",
-  defaultModel: "gemini-2.5-flash",
+  provider: "groq",
+  apiKeyEnv: "GROQ_API_KEY",
+  defaultModel: "llama-3.3-70b-versatile",
 }
 
 // Optionally set a provider URL for server-side API calls. Leave empty to require

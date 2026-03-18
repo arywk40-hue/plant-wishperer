@@ -1,4 +1,3 @@
-import { GoogleGenAI, GenerateContentParameters } from "@google/genai";
 import { ASSISTANT_CONFIG } from "@/config/analysis-config";
 
 // --------------------------------------------------------------------------
@@ -155,69 +154,94 @@ What specific challenge are you facing with your crops today?`;
 
 
 // --------------------------------------------------------------------------
-// 3. GEMINI API INTEGRATION LOGIC
+// 3. PROVIDER API INTEGRATION LOGIC
 // --------------------------------------------------------------------------
 
-// Initialize the GoogleGenAI client (reads GEMINI_API_KEY from process.env)
-const ai = new GoogleGenAI({});
+type AssistantProvider = "groq";
+
+function resolveProvider(): AssistantProvider {
+  const provider = (process.env.ASSISTANT_PROVIDER || ASSISTANT_CONFIG.provider || "groq").toLowerCase()
+  return provider === "groq" ? "groq" : "groq"
+}
+
+function resolveAssistantModel(reqModel?: string) {
+  return reqModel || process.env.ASSISTANT_MODEL || ASSISTANT_CONFIG.defaultModel
+}
+
+async function callGroqAssistant(prompt: string, model: string): Promise<AssistantResponse> {
+  const apiKey = process.env.GROQ_API_KEY || process.env[ASSISTANT_CONFIG.apiKeyEnv]
+  if (!apiKey) {
+    return {
+      text: generateSmartResponse(prompt),
+      source: "local_knowledge_base",
+    }
+  }
+
+  const systemInstruction = `You are PlantWhisperer Pro, an AI agricultural assistant. Provide helpful, accurate advice about crop health, disease identification, farming best practices, and sensor data interpretation. The context of this application is early problem detection using drone imagery, soil sensors, and plant acoustics. Focus on practical, actionable advice.`
+
+  try {
+    const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        model,
+        temperature: 0.2,
+        messages: [
+          { role: "system", content: systemInstruction },
+          { role: "user", content: prompt },
+        ],
+      }),
+    })
+
+    if (!response.ok) {
+      const errorBody = await response.text()
+      throw new Error(`Groq API ${response.status}: ${errorBody}`)
+    }
+
+    const payload = await response.json()
+    const responseText = payload?.choices?.[0]?.message?.content
+
+    return {
+      text:
+        typeof responseText === "string" && responseText.trim()
+          ? responseText
+          : "The model completed the request but returned an empty text response.",
+      source: `groq_api_${model}`,
+    }
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : "Unknown error occurred"
+    console.error("External Groq API failed, falling back to local:", errorMessage)
+    return {
+      text: generateSmartResponse(prompt),
+      source: "local_fallback",
+      error: errorMessage,
+    }
+  }
+}
 
 export async function callAssistant(req: AssistantRequest): Promise<AssistantResponse> {
-  
-  // Check if API key is configured for external use
-  const configuredApiKey =
-    process.env[ASSISTANT_CONFIG.apiKeyEnv] ||
-    process.env.GEMINI_API_KEY ||
-    process.env.GOOGLE_API_KEY;
-  const isGeminiConfigured = !!configuredApiKey;
+  const provider = resolveProvider()
+  const configuredApiKey = process.env[ASSISTANT_CONFIG.apiKeyEnv] || process.env.GROQ_API_KEY
+  const isProviderConfigured = !!configuredApiKey
 
-  if (!isGeminiConfigured) {
-    console.log('Using local PlantWhisperer assistant (GEMINI_API_KEY not configured)');
+  if (!isProviderConfigured) {
+    console.log(`Using local PlantWhisperer assistant (${ASSISTANT_CONFIG.apiKeyEnv} not configured)`)
     return { 
       text: generateSmartResponse(req.prompt),
       source: 'local_knowledge_base'
-    };
+    }
   }
 
-  // Use the external Gemini API
-  try {
-    const model = req.model || ASSISTANT_CONFIG.defaultModel;
-    
-    // Define the System Instruction (context for the model)
-    const systemInstruction = `You are PlantWhisperer Pro, an AI agricultural assistant. Provide helpful, accurate advice about crop health, disease identification, farming best practices, and sensor data interpretation. The context of this application is early problem detection using drone imagery, soil sensors, and plant acoustics. Focus on practical, actionable advice.`;
+  const model = resolveAssistantModel(req.model)
+  if (provider === "groq") {
+    return callGroqAssistant(req.prompt, model)
+  }
 
-    // Configure the request content
-    const requestConfig: GenerateContentParameters = {
-        model: model, 
-        contents: [
-            { role: "user", parts: [{ text: req.prompt }] }
-        ],
-        config: {
-            systemInstruction: systemInstruction,
-        }
-    };
-    
-    // ✅ FIX: Use ai.models.generateContent(requestConfig)
-    // This is the correct, stable pattern that resolves the TypeScript error.
-    const response = await ai.models.generateContent(requestConfig);
-
-    // ✅ FIX: Use nullish coalescing (??) to ensure the text is a string
-    const responseText = response.text ?? "The model completed the request but returned an empty text response.";
-    
-    // Return path 2: Successful external API call (guaranteed string)
-    return { 
-      text: responseText,
-      source: `gemini_api_${model}`
-    };
-
-  } catch (error: unknown) {
-    const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
-    console.error('External Gemini API failed, falling back to local:', errorMessage);
-    
-    // Return path 3: API failure/fallback (always returns a string)
-    return { 
-      text: generateSmartResponse(req.prompt), // This function is guaranteed to return a string
-      source: 'local_fallback',
-      error: errorMessage
-    };
+  return {
+    text: generateSmartResponse(req.prompt),
+    source: "local_knowledge_base",
   }
 }
